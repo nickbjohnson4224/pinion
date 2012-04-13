@@ -1,0 +1,54 @@
+-- Note: Pinion is still in an unreleased draft stage. It will be released 
+as a draft specification on April 19, 2012, after which it will eventually 
+be finalized. --
+
+Pinion - a kernel for your kernel
+
+Pinion is a stripped-down microkernel specification that is designed to 
+act as a threading and paging engine for a larger operating system. In the 
+same way that a game engine provides mechanism for a video game without 
+imposing specific policies, Pinion provides the common but 
+difficult-to-implement components of an OS kernel without defining 
+anything about how the system interacts with userspace, so that new 
+systems can be developed quickly with a common stable base.
+
+Pinion itself is only a specification for a kernel, while this project 
+(pinion-x86) is a particular implementation for single-processor x86 
+systems. Because the Pinion API is implementation-independent and makes 
+no assumptions about things like SMP or PAE, other implementations may 
+add more advanced features. The intent is for the specification to be 
+comprehensive and well-defined enough for any Pinion-compliant kernel to 
+be usable as a drop-in replacement for any other (for any fixed 
+processor architecture, of course).
+
+In short, if you develop an OS on top of Pinion, you will not only get 
+(stable and tested!) memory management, interrupt handling, and preemptive 
+multithreading for free, but also transparent upgrades. When (i.e. if)
+versions of Pinion are developed for other architectures, it will also
+likely be easy to port Pinion-based systems from x86 to those
+architectures, because the high-level semantics will be preserved.
+
+The name Pinion comes from the name for the outermost primary feathers 
+on a bird's wing, which are critical for flight.
+
+==============================================================================
+
+Build Instructions:
+
+Before you can build Pinion, you must install a cross compiler. This is 
+completely automated. Simply type:
+
+	make tools
+
+Once this has completed (it may take 20-30 minutes), the Pinion kernel
+and test system may be compiled and tested by typing:
+
+	make test
+
+(This relies on genisoimage and QEMU being installed on the host system.)
+
+To clean up all generated files, type:
+
+	make clean
+
+See the Makefile for more build targets.
