@@ -1,11 +1,3 @@
--- Note: Pinion (as a specification) is still in an unreleased draft stage. 
--- It is currently being developed along with a larger (private) project
--- and will be released in a stable form when that project is made public
--- in a couple of months. I wanted to make sure that it was definitely
--- powerful enough to host a real system, and that was the best way to do
--- it. If you use the version here, it should be pretty easy to upgrade to
--- the release version when it comes out, but expect minor breakage.
-
 Pinion - a kernel for your kernel
 
 Pinion is a stripped-down microkernel specification that is designed to 
