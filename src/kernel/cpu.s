@@ -81,8 +81,10 @@ cpu_halt:
 global cpu_idle
 cpu_idle:
 	mov esp, idle_stack + 0xFF0
+.ab:
 	sti
 	hlt
+	jmp .ab
 
 global cpu_set_cr3
 cpu_set_cr3:

@@ -17,6 +17,7 @@
 #include "interrupt.h"
 #include "string.h"
 #include "ports.h"
+#include "debug.h"
 #include "cpu.h"
 
 /*****************************************************************************
@@ -69,10 +70,12 @@ struct thread *int_handler(struct thread *image) {
 
 	/* reset IRQs if it was an IRQ */
 	if (ISIRQ(image->num)) {
-		irq_reset(INT2IRQ(image->num));
 
-		if (INT2IRQ(image->num) > 0) {
-			event_send(-1, EV_IRQ(INT2IRQ(image->num)), 0);
+		if (INT2IRQ(image->num) != 0) {
+			event_send(-1, INT2IRQ(image->num));
+		}
+		else {
+			irq_reset(INT2IRQ(image->num));
 		}
 	}
 
@@ -84,10 +87,17 @@ struct thread *int_handler(struct thread *image) {
 	/* return active thread */
 	image = thread_get_active();
 	if (!image) {
-		/* schedule new active thread */
+
+		/* get next thread from scheduler */
 		image = schedule_next();
-		if (!image) cpu_idle();
-		thread_set_state(image->id, TS_RUNNING);
+		if (!image) {
+			cpu_idle();
+		}
+
+		/* schedule new active thread */
+		schedule_remv(image);
+		thread_load(image);
+		image->state = TS_RUNNING;
 	}
 
 	return image;
@@ -268,6 +278,8 @@ void set_int_stack(void *ptr) {
  * Initialize the PIC (Programmable Interrupt Controller).
  */
 
+static uint16_t _irq_mask;
+
 int irq_init(void) {
 
 	/* (re)initialize 8259 PIC */
@@ -281,6 +293,24 @@ int irq_init(void) {
 	outb(0xA1, 0x01); /* 8086 (standard) mode */
 	outb(0x21, 0x00); /* Master IRQ mask */
 	outb(0xA1, 0x00); /* Slave IRQ mask */
+
+	return 0;
+}
+
+int irq_mask(irqid_t irq) {
+	_irq_mask |= (1 << irq);
+
+	if (irq > 7) outb(0xA1, _irq_mask >> 8);
+	else         outb(0x21, _irq_mask & 0xFF);
+
+	return 0;
+}
+
+int irq_unmask(irqid_t irq) {
+	_irq_mask &= ~(1 << irq);
+
+	if (irq > 7) outb(0xA1, _irq_mask >> 8);
+	else         outb(0x21, _irq_mask & 0xFF);
 
 	return 0;
 }
@@ -314,6 +344,8 @@ int irq_reset(irqid_t irq) {
 
 /* 8253 PIT driver **********************************************************/
 
+static uint32_t pit_freq = 1;
+
 /*****************************************************************************
  * timer_handler (interrupt handler)
  *
@@ -321,11 +353,28 @@ int irq_reset(irqid_t irq) {
  */
 
 static void timer_handler(struct thread *image) {
+	static uint32_t tick = 0;
+
+	tick++;
+
+	// trigger virtual event timers
+	uint32_t ptime = ((tick - 1) << 10) / pit_freq;
+	uint32_t ctime = (tick << 10) / pit_freq;
+	uint32_t time = (ptime ^ ctime);
+	time = time + (time & -time) - 1;
+
+	for (int i = 0; i < 16; i++) {
+		if (time & (1 << (15 - i))) {
+			event_send(-1, EV_VTIMER(i));
+		}
+	}
 
 	image->tick++;
 
-	if (thread_get_state(image->id) == TS_RUNNING) {
-		thread_set_state(image->id, TS_QUEUED);
+	if (image->state == TS_RUNNING) {
+		thread_save(image);
+		schedule_push(image);
+		image->state = TS_QUEUED;
 	}
 }
 
@@ -352,6 +401,8 @@ int timer_set_freq(uint32_t hertz) {
 
 	irq_init();
 	int_set_handler(IRQ2INT(0), timer_handler);
+
+	pit_freq = hertz;
 
 	return 0;
 }

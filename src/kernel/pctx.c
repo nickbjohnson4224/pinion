@@ -15,7 +15,7 @@
  */
 
 #include <config/address.h>
-#include "rho/arch.h"
+#include "arch.h"
 
 #include <pinion.h>
 

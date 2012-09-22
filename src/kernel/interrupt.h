@@ -47,6 +47,11 @@ int irq_init(void);
 
 int irq_reset(irqid_t irq);
 
+/* IRQ masking **************************************************************/
+
+int irq_mask(irqid_t irq);
+int irq_unmask(irqid_t irq);
+
 /* timer frequency **********************************************************/
 
 int timer_set_freq(uint32_t hertz);

@@ -22,9 +22,6 @@
 #include "pctx.h"
 #include "cpu.h"
 
-static int schedule_push(struct thread *thread);
-static int schedule_remv(struct thread *thread);
-
 static struct thread *_active_thread;
 static struct thread *_thread_table[THREAD_COUNT];
 
@@ -112,7 +109,7 @@ struct thread *thread_get_active(void) {
  * context of the given thread.
  */
 
-static int thread_load(struct thread *thread) {
+int thread_load(struct thread *thread) {
 	
 	if (thread->vm86_active) {
 		set_int_stack(&thread->vm86_start);
@@ -129,6 +126,8 @@ static int thread_load(struct thread *thread) {
 		pctx_load(thread->pctx);
 	}
 
+	_active_thread = thread;
+
 	return 0;
 }
 
@@ -139,11 +138,13 @@ static int thread_load(struct thread *thread) {
  * before switching to another thread.
  */
 
-static int thread_save(struct thread *thread) {
+int thread_save(struct thread *thread) {
 	
 	if (thread && thread->fxdata) {
 		fpu_save(thread->fxdata);
 	}
+
+	_active_thread = NULL;
 
 	return 0;
 }
@@ -166,176 +167,12 @@ int thread_new(void) {
 	return thread->id;
 }
 
-/*****************************************************************************
- * thread_get_state
- *
- * Return the current state of the thread associated with the given thread ID.
- */
-
-int thread_get_state(int id) {
-	struct thread *thread = thread_get(id);
-
-	if (!thread) {
-		return TS_FREE;
-	}
-
-	return thread->state;
-}
-
-static void invtrans(int id, int state0, int state1) {
-	static const char *tsnames[6] = {
-		"FREE", "QUEUED", "RUNNING", "WAITING", "PAUSED", "ZOMBIE" };
-
-	const char *name0 = (state0 < 0 || state0 > 5) ? "INVALID" : tsnames[state0];
-	const char *name1 = (state1 < 0 || state1 > 5) ? "INVALID" : tsnames[state1];
-
-	debug_printf("error: %d: state transition %s -> %s\n", id, name0, name1);
-	debug_panic("invalid thread state transition");
-}
-
-/*****************************************************************************
- * thread_set_state
- *
- * Perform a state transition for the given thread to the given state. If this
- * transition is invalid, the kernel will panic. Any code that is able to
- * request an invalid state transition is incorrect and must be fixed. This is
- * the only function that should be able to modify the state of a thread
- * (other than thread_kill and thread_alloc, which transition in and out of
- * TS_FREE and are internal anyway.)
- */
-
-int thread_set_state(int id, int state) {
-	struct thread *thread = thread_get(id);
-
-	/* transitions out of TS_FREE are invalid */
-	if (!thread) {
-		invtrans(id, TS_FREE, state);
-		return 1;
-	}
-
-	/* redundant state transitions are invalid */
-	if (thread->state == state) {
-		invtrans(id, thread->state, state);
-		return 1;
-	}
-
-	switch (thread->state) {
-	case TS_QUEUED:
-		switch (state) {
-		case TS_RUNNING:						/* schedule */
-			thread->state = TS_RUNNING;
-			thread_load(thread);
-			_active_thread = thread;
-			schedule_remv(thread);
-			break;
-
-		case TS_PAUSED:							/* pause */
-			thread->state = TS_PAUSED;
-			schedule_remv(thread);
-			break;
-
-		case TS_ZOMBIE:							/* kill */
-			thread->state = TS_ZOMBIE;
-			schedule_remv(thread);
-			break;
-
-		default:
-			invtrans(id, thread->state, state);
-			return 1;
-		}
-		break;
-
-	case TS_RUNNING:
-		switch (state) {
-		case TS_QUEUED:							/* yield or preempt */
-			thread->state = TS_QUEUED;
-			schedule_push(thread);
-			break;
-
-		case TS_WAITING:						/* wait */
-			thread->state = TS_WAITING;
-			break;
-
-		case TS_PAUSED:							/* fault or pause */
-			thread->state = TS_PAUSED;
-			break;
-
-		case TS_ZOMBIE:							/* exit or kill */
-			thread->state = TS_ZOMBIE;
-			break;
-
-		default:
-			invtrans(id, thread->state, state);
-			return 1;
-		}
-		thread_save(thread);
-		_active_thread = NULL;
-		break;
-
-	case TS_WAITING:
-		switch (state) {
-		case TS_QUEUED:							/* wakeup */
-			thread->state = TS_QUEUED;
-			schedule_push(thread);
-			break;
-
-		case TS_ZOMBIE:							/* kill */
-			thread->state = TS_ZOMBIE;
-			break;
-
-		case TS_PAUSED:							/* pause */
-			thread->state = TS_PAUSED;
-			event_remv(thread->id, thread->event);
-			break;
-
-		default:
-			invtrans(id, thread->state, state);
-			return 1;
-		}
-		break;
-
-	case TS_PAUSED:
-		switch (state) {
-		case TS_QUEUED:							/* resume */
-			thread->state = TS_QUEUED;
-			schedule_push(thread);
-			break;
-
-		case TS_WAITING:
-			thread->state = TS_WAITING;			/* resume */
-			break;
-
-		case TS_ZOMBIE:							/* kill */
-			thread->state = TS_ZOMBIE;
-			break;
-
-		default:
-			invtrans(id, thread->state, state);
-			return 1;
-		}
-		break;
-
-	case TS_ZOMBIE:
-
-		if (state != TS_FREE) 
-			invtrans(id, thread->state, state);
-		thread_kill(thread);					/* reap */
-		break;
-
-	default:
-		invtrans(id, thread->state, state);
-		return 1;
-	}
-
-	return 0;
-}
-
 /* scheduler ****************************************************************/
 
 struct thread *sched_head;
 struct thread *sched_tail;
 
-static int schedule_push(struct thread *thread) {
+int schedule_push(struct thread *thread) {
 
 	if (!sched_tail) {
 		sched_head = thread;
@@ -349,7 +186,7 @@ static int schedule_push(struct thread *thread) {
 	return 0;
 }
 
-static int schedule_remv(struct thread *thread) {
+int schedule_remv(struct thread *thread) {
 	
 	if (!sched_head) {
 		return 1;
@@ -392,6 +229,8 @@ static struct evqueue {
 	struct thread *back_thread;
 } evqueue[EV_COUNT];
 
+int irqstate[EV_COUNT];
+
 int event_wait(int id, int event) {
 	struct thread *thread = thread_get(id);
 
@@ -399,37 +238,21 @@ int event_wait(int id, int event) {
 		return 1;
 	}
 
+	if (event < 0) {
+		if (irqstate[~event]) {
+			return 1;
+		}
+		return 0;
+	}	
+
 	if (event < 0 || event >= EV_COUNT) {
 		return 1;
 	}
 
-	if (thread->ev_head) {
-		/* handle event queued locally for this thread */
-		struct event *e = thread->ev_head;
-		
-		thread->ev_head = e->next;
-		if (thread->ev_tail == e) {
-			thread->ev_tail = NULL;
-		}
-		thread->eax = e->event;
-		thread->ecx = e->status;
-		heap_free(e, sizeof(struct event));
-
-		thread_set_state(thread->id, TS_QUEUED);
-	}
-	else if (evqueue[event].ev_head) {
-		/* handle already-queued event */
-		struct event *e = evqueue[event].ev_head;
-
-		evqueue[event].ev_head = e->next;
-		if (evqueue[event].ev_tail == e) {
-			evqueue[event].ev_tail = NULL;
-		}
-		thread->eax = event;
-		thread->ecx = e->status;
-		heap_free(e, sizeof(struct event));
-
-		thread_set_state(thread->id, TS_QUEUED);
+	if (irqstate[event]) {
+		thread_save(thread);
+		schedule_push(thread);
+		thread->state = TS_QUEUED;
 	}
 	else {
 		/* queue thread */
@@ -442,7 +265,9 @@ int event_wait(int id, int event) {
 		evqueue[event].back_thread = thread;
 		thread->next_evqueue = NULL;
 		thread->event = event;
-		thread_set_state(thread->id, TS_WAITING);
+
+		thread_save(thread);
+		thread->state = TS_WAITING;
 	}
 
 	return 0;
@@ -483,76 +308,213 @@ int event_remv(int id, int event) {
 	return 1;
 }
 
-int event_send(int id, int event, int status) {
+int event_send(int id, int event) {
 
 	if (event < 0 || event >= EV_COUNT) {
 		return 1;
 	}
-	
-	if (id == -1) {
 
-		// send to waiting thread
-		if (evqueue[event].front_thread) {
-			// handle event now
-			struct thread *thread = evqueue[event].front_thread;
-			evqueue[event].front_thread = thread->next_evqueue;
-			if (!thread->next_evqueue) evqueue[event].back_thread = NULL;
-			
-			thread->eax = event;
-			thread->ecx = status;
+	if (evqueue[event].front_thread) {
 
-			thread->event = -1;
-			thread_set_state(thread->id, TS_QUEUED);
+		// handle event now
+		struct thread *thread = evqueue[event].front_thread;
+		evqueue[event].front_thread = thread->next_evqueue;
+		if (!thread->next_evqueue) evqueue[event].back_thread = NULL;
+
+		thread->eax = event;
+		thread->event = -1;
+
+		if (thread->state == TS_RUNNING) {
+			thread_save(thread);
 		}
-		else {
-			// queue event
-			struct event *ev = heap_alloc(sizeof(struct event));
-			ev->status = status;
-			ev->event  = event;
-			if (!evqueue[event].ev_tail) {
-				evqueue[event].ev_tail = ev;
-				evqueue[event].ev_head = ev;
-				ev->next = NULL;
-			}
-			else {
-				evqueue[event].ev_tail->next = ev;
-				evqueue[event].ev_tail = ev;
-				ev->next = NULL;
-			}
+		schedule_push(thread);
+		thread->state = TS_QUEUED;
+	}
+
+	if (event < 240) {
+		irq_mask(event);
+		irq_reset(event);
+		irqstate[event] = 1;
+	}
+
+	return 0;
+}
+
+/* dead queue ***************************************************************/
+
+static struct thread *dead_tail;
+static struct thread *dead_head;
+
+static struct thread *reaper_tail;
+static struct thread *reaper_head;
+
+int dead_push(struct thread *thread) {
+
+	if (reaper_tail) {
+
+		// retrieve next reaper
+		struct thread *reaper;
+		reaper = reaper_tail;
+		reaper_tail = reaper_tail->next_dead;
+		if (!reaper_tail) {
+			reaper_head = NULL;
 		}
+
+		// notify reaper
+		reaper->eax = thread->id;
+		schedule_push(reaper);
+		reaper->state = TS_QUEUED;
+
+		return 0;
+	}
+
+	if (dead_head) {
+		dead_head->next_dead = thread;
+		thread->next_dead = NULL;
+		dead_head = thread;
 	}
 	else {
-		struct thread *thread = thread_get(id);
+		dead_head = thread;
+		dead_tail = thread;
+	}
 
-		if (!thread) {
-			return 1;
+	return 0;
+}
+
+struct thread *dead_peek(void) {
+	return dead_tail;
+}
+
+struct thread *dead_pull(void) {
+	struct thread *dead;
+
+	if (!dead_tail) {
+		return NULL;
+	}
+
+	dead = dead_tail;
+	dead_tail = dead_tail->next_dead;
+	
+	if (!dead_tail) {
+		dead_head = NULL;
+	}
+
+	return dead;
+}
+
+int dead_wait(struct thread *reaper) {
+
+	if (dead_tail) {
+
+		// retrieve next dead
+		struct thread *dead = dead_pull();
+
+		// notify reaper
+		reaper->eax = dead->id;
+		schedule_push(reaper);
+		reaper->state = TS_QUEUED;
+
+		return 0;
+	}
+
+	if (reaper_head) {
+		reaper_head->next_dead = reaper;
+		reaper->next_dead = NULL;
+		reaper_head = reaper;
+	}
+	else {
+		reaper_head = reaper;
+		reaper_tail = reaper;
+	}
+
+	return 0;
+}
+
+/* fault queue **************************************************************/
+
+static struct thread *fault_head;
+static struct thread *fault_tail;
+
+static struct thread *debug_head;
+static struct thread *debug_tail;
+
+int fault_push(struct thread *fault) {
+
+	if (debug_tail) {
+
+		// retrieve next debugger
+		struct thread *debug;
+		debug = debug_tail;
+		debug_tail = debug_tail->next_fault;
+		if (!debug_tail) {
+			debug_head = NULL;
 		}
 
-		if (thread_get_state(id) != TS_WAITING) {
-			// queue event in local event queue
-			struct event *ev = heap_alloc(sizeof(struct event));
-			ev->status = status;
-			ev->event  = event;
-			if (thread->ev_tail) {
-				thread->ev_tail = ev;
-				thread->ev_head = ev;
-				ev->next = NULL;
-			}
-			else {
-				thread->ev_tail->next = ev;
-				thread->ev_tail = ev;
-				ev->next = NULL;
-			}
-		}
-		else {
-			// handle event now
-			thread->eax = event;
-			thread->ecx = status;
+		// notify debugger
+		debug->eax = fault->id;
+		schedule_push(debug);
+		debug->state = TS_QUEUED;
 
-			event_remv(thread->id, thread->event);
-			thread->event = -1;
-			thread_set_state(thread->id, TS_QUEUED);
-		}
+		return 0;
+	}
+
+	if (fault_head) {
+		fault_head->next_fault = fault;
+		fault->next_fault = NULL;
+		fault_head = fault;
+	}
+	else {
+		fault_head = fault;
+		fault_tail = fault;
+	}
+
+	return 0;
+}
+
+struct thread *fault_peek(void) {
+	return fault_tail;
+}
+
+struct thread *fault_pull(void) {
+	struct thread *fault;
+
+	if (!fault_tail) {
+		return NULL;
+	}
+
+	fault = fault_tail;	
+	fault_tail = fault_tail->next;
+
+	if (!fault_tail) {
+		fault_head = NULL;
+	}
+
+	return fault;
+}
+
+int fault_wait(struct thread *debug) {
+
+	if (fault_tail) {
+
+		// retrieve next faulting thread
+		struct thread *fault = fault_pull();
+
+		// notify debugger
+		debug->eax = fault->id;
+		schedule_push(debug);
+		debug->state = TS_QUEUED;
+		
+		return 0;
+	}
+
+	if (debug_head) {
+		debug_head->next_fault = debug;
+		debug->next_fault = NULL;
+		debug_head = debug;
+	}
+	else {
+		debug_head = debug;
+		debug_tail = debug;
 	}
 
 	return 0;

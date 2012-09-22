@@ -36,8 +36,13 @@ void fault_generic(struct thread *image) {
 		debug_panic("unknown exception");
 	}
 
-	thread_set_state(image->id, TS_PAUSED);
-	event_send(-1, EV_FAULT, image->id);
+	// pause thread
+	thread_save(image);
+	image->state = TS_PAUSED;
+	image->fault = FV_ACCS;
+
+	// add to fault queue
+	fault_push(image);
 }
 
 /*****************************************************************************
@@ -69,9 +74,13 @@ void fault_page(struct thread *image) {
 	}
 
 	/* fault */
-	image->pfault_addr = cr2;
-	thread_set_state(image->id, TS_PAUSED);
-	event_send(-1, EV_FAULT, image->id);
+	thread_save(image);
+	image->fault_addr = cr2;
+	image->fault = FV_PAGE;
+	image->state = TS_PAUSED;
+
+	// add to fault queue
+	fault_push(image);
 }
 
 /*****************************************************************************

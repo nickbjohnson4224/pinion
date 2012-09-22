@@ -14,93 +14,137 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <pinion.h>
 #include "kernel.h"
 
-int spawn(void *stack, void (*entry)(void)) {
-	return kcall(KCALL_SPAWN, (int) stack, (int) entry, 0, 0);
+extern int kcall(int call, int arg0, int arg1, int arg2, int arg3);
+
+int __t_spawn(struct t_info *state) {
+	return kcall(KCALL_SPAWN, (int) state, 0, 0, 0);
 }
 
-int exit(int status) {
-	return kcall(KCALL_EXIT, status, 0, 0, 0);
+int __t_exit(int status) {
+	struct t_info state;
+	int err;
+
+	err = __t_getstate(-1, &state);
+	if (err) return err;
+
+	state.flags |= TF_DEAD;
+	state.regs.eax = status;
+
+	err = __t_setstate(-1, &state);
+	if (err) return err;
+
+	return 0;
 }
 
-int kill(int thread, int status) {
-	return kcall(KCALL_KILL, thread, status, 0, 0);
+int __t_kill(int thread, int status) {
+	struct t_info state;
+	int err;
+
+	err = __t_pause(thread);
+	if (err) return err;
+
+	err = __t_getstate(thread, &state);
+	if (err) return err;
+
+	state.flags |= TF_DEAD;
+	state.regs.eax = status;
+
+	err = __t_setstate(thread, &state);
+	if (err) return err;
+
+	return 0;
 }
 
-int wait(int event, int *status) {
-	extern int _wait(int event, int *status);
-	return _wait(event, status);
-}
-
-int reap(int thread, struct t_info *info) {
+int __t_reap(int thread, struct t_info *info) {
 	return kcall(KCALL_REAP, thread, (int) info, 0, 0);
 }
 
-int gettid(void) {
+int __t_getid(void) {
 	return kcall(KCALL_GETTID, 0, 0, 0, 0);
 }
 
-int yield(void) {
+int __t_yield(void) {
 	return kcall(KCALL_YIELD, 0, 0, 0, 0);
 }
 
-int wakeup(int thread, int event, int status) {
-	return kcall(KCALL_WAKEUP, thread, event, status, 0);
-}
-
-int renice(int thread, int priority) {
-	return kcall(KCALL_RENICE, thread, priority, 0, 0);
-}
-
-int pause(int thread) {
+int __t_pause(int thread) {
 	return kcall(KCALL_PAUSE, thread, 0, 0, 0);
 }
 
-int resume(int thread) {
+int __t_resume(int thread) {
 	return kcall(KCALL_RESUME, thread, 0, 0, 0);
 }
 
-int t_info(int thread, struct t_info *info) {
-	return kcall(KCALL_INFO, thread, (int) info, 0, 0);
+int __t_getstate(int thread, struct t_info *state) {
+	return kcall(KCALL_GETSTATE, thread, (int) state, 0, 0);
 }
 
-int fixup(int thread, struct t_info *info) {
-	return kcall(KCALL_FIXUP, thread, (int) info, 0, 0);
+int __t_setstate(int thread, struct t_info *state) {
+	return kcall(KCALL_SETSTATE, thread, (int) state, 0, 0);
 }
 
-int newpctx(void) {
+int __t_getdead(void) {
+	return kcall(KCALL_GETDEAD, 0, 0, 0, 0);
+}
+
+int __t_getfault(void) {
+	return kcall(KCALL_GETFAULT, 0, 0, 0, 0);
+}
+
+int __irq_wait(int irq) {
+	return kcall(KCALL_WAIT, irq, 0, 0, 0);
+}
+
+int __irq_reset(int irq) {
+	return kcall(KCALL_RESET, irq, 0, 0, 0);
+}
+
+int pctx_new(void) {
 	return kcall(KCALL_NEWPCTX, 0, 0, 0, 0);
 }
 
-int freepctx(int pctx) {
+int pctx_free(int pctx) {
 	return kcall(KCALL_FREEPCTX, pctx, 0, 0, 0);
 }
 
-int setpctx(int thread, int pctx) {
-	return kcall(KCALL_SETPCTX, thread, pctx, 0, 0);
+uint64_t newframe(void) {
+	return kcall(KCALL_NEWFRAME, 0, 0, 0, 0);
 }
 
-int getpctx(int thread) {
-	return kcall(KCALL_GETPCTX, thread, 0, 0, 0);
+int freeframe(uint64_t frame) {
+	return kcall(KCALL_FREEFRAME, frame & 0xFFFFFFFF, frame >> 32ULL, 0, 0);
 }
 
-int alloc(uint32_t page, int flags) {
-	return kcall(KCALL_ALLOC, page, flags, 0, 0);
+int takeframe(uint64_t frame) {
+	return kcall(KCALL_TAKEFRAME, frame & 0xFFFFFFFF, frame >> 32ULL, 0, 0);
 }
 
-int setframe(uint32_t page, uint64_t frame) {
+int p_alloc(uint32_t page, int flags) {
+	uint64_t frame = newframe();
+
+	if (frame == 0xFFFFFFFFFFFFFFFFULL) return 1;
+
+	p_set_frame(page, frame);
+	p_set_flags(page, flags);
+
+	return 0;
+}
+
+int p_set_frame(uint32_t page, uint64_t frame) {
 	return kcall(KCALL_SETFRAME, page, frame, 0, 0);
 }
 
-int setflags(uint32_t page, int flags) {
+int p_set_flags(uint32_t page, int flags) {
 	return kcall(KCALL_SETFLAGS, page, flags, 0, 0);
 }
 
-uint64_t getframe(uint32_t page) {
+uint64_t p_get_frame(uint32_t page) {
 	return kcall(KCALL_GETFRAME, page, 0, 0, 0);
 }
 
-int getflags(uint32_t page) {
+int p_get_flags(uint32_t page) {
 	return kcall(KCALL_GETFLAGS, page, 0, 0, 0);
 }

@@ -156,7 +156,6 @@ struct thread *init(struct multiboot *mboot, uint32_t mboot_magic) {
 	init_thread->cs      = 0x19;
 	init_thread->eflags  = cpu_get_eflags() | 0x1200; /* IF, IOPL = 1 */
 	init_thread->eip     = system_image->e_entry;
-	thread_set_state(init_thread->id, TS_QUEUED);
 
 	/* register kernel calls */
 	int_set_handler(0x81, kcall);
@@ -191,6 +190,7 @@ struct thread *init(struct multiboot *mboot, uint32_t mboot_magic) {
 	/* drop to usermode, scheduling the next thread */
 	debug_printf("passing control to system\n");
 
-	thread_set_state(init_thread->id, TS_RUNNING);
+	thread_load(init_thread);
+	init_thread->state = TS_RUNNING;
 	return init_thread;
 }

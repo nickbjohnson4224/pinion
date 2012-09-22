@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <pinion.h>
 #include "kernel.h"
 #include "log.h"
 
@@ -27,62 +28,52 @@ int t_reaper;
 int t_debugger;
 
 void func0(void) {
-	log(VERBOSE, "func0 on thread %d", gettid());
+	log(VERBOSE, "func0 on thread %d", __t_getid());
 }
 
 void func1(void) {
-	log(VERBOSE, "func1 on thread %d", gettid());
+	log(VERBOSE, "func1 on thread %d", __t_getid());
 
 	for(;;);
 }
 
 void debugger(void) {
-	int thread;
 	struct t_info info;
-
-	log(INIT, "debugger starting on thread %d", gettid());
+	
+	log(INIT, "debugger starting on thread %d", __t_getid());
 
 	while (1) {
-		int event = wait(EV_FAULT, &thread);
+		int thread = __t_getfault();
 
-		if (event != EV_FAULT) {
-			continue;
+		__t_getstate(thread, &info);
+
+		const char *name = "nameless";
+
+		log(ERROR, "page fault from %d (%s) at %p", thread, name, info.fault_addr);
+		log(ERROR, "EIP: %p", info.regs.eip);
+		log(ERROR, "ESP: %p\tEBP: %p", info.regs.esp, info.regs.ebp);
+		log(ERROR, "EAX: %p\tEBX: %p", info.regs.eax, info.regs.ebx);
+		log(ERROR, "ECX: %p\tEDX: %p", info.regs.ecx, info.regs.edx);
+		log(ERROR, "EDI: %p\tESI: %p", info.regs.edi, info.regs.esi);
+		log(ERROR, "");
+
+		log(ERROR, "stack trace:");
+		for (int i = 6; i >= 0; i--) {
+			int val = ((uint32_t*) info.regs.esp)[i];
+			log(ERROR, "[ESP+%b]: %p (%d)", i * 4, val, val);
 		}
 
-		t_info(thread, &info);
-
-		log(DEBUG, "page fault on thread %d at address %p", thread, info.fault_addr);
-		log(DEBUG, "EIP: %p", info.regs.eip);
-		log(DEBUG, "ESP: %p\tEBP: %p", info.regs.esp, info.regs.ebp);
-		log(DEBUG, "EAX: %p\tEBX: %p", info.regs.eax, info.regs.ebx);
-		log(DEBUG, "ECX: %p\tEDX: %p", info.regs.ecx, info.regs.edx);
-		log(DEBUG, "EDI: %p\tESI: %p", info.regs.edi, info.regs.esi);
-
-		if (info.regs.esi == 1337) {
-			log(DEBUG, "debugger killing thread %d", thread);
-			kill(thread, 1);
-		}
-		else {
-			info.regs.esi = 1337;
-			fixup(thread, &info);
-			resume(thread);
-		}
+		__t_kill(thread, 1);
 	}
 }
 
 void reaper(void) {
-	int thread;	
-
-	log(INIT, "reaper starting on thread %d", gettid());
+	log(INIT, "reaper starting on thread %d", __t_getid());
 
 	while (1) {
-		int event = wait(EV_EXIT, &thread);
+		int thread = __t_getdead();
 
-		if (event != EV_EXIT) {
-			continue;
-		}
-
-		reap(thread, (void*) 0);
+		__t_reap(thread, (void*) 0);
 	}
 }
 
@@ -171,15 +162,13 @@ void keyboard(void) {
 	static bool numlk = false;
 	
 	while (1) {
-		int status;
-		int event = wait(EV_IRQ(1), &status);
-
-		if (event != EV_IRQ(1)) {
-			continue;
-		}
+		__irq_wait(1);
 
 		extern uint8_t inb(uint16_t port);
 		uint8_t scan = inb(0x60) & 0xFF;
+
+		__irq_reset(1);
+
 		if (scan == 0xE0) continue;
 		int code = keymap[((shift ^ caps) ? 2 : 0) | ((numlk) ? 1 : 0)][scan & ~0x80];
 
@@ -204,19 +193,23 @@ void keyboard(void) {
 }
 
 void init(void) {
-	uint32_t *foo = (void*) 0x12345000;
+	struct t_info state;
 
-	__init_log();	
+	__init_log();
 
-	t_debugger = spawn(&stack[255], debugger);
-	t_reaper = spawn(&stack[511], reaper);
-	spawn(&stack[65535], keyboard);
+	log(INIT, "starting up");
 
-	alloc((uint32_t) foo, 0x3);
+	state.regs.eip = (uintptr_t) debugger;
+	state.regs.esp = (uintptr_t) &stack[255];
+	t_debugger = __t_spawn(&state);
 
-	foo[42] = 7;
+	state.regs.eip = (uintptr_t) reaper;
+	state.regs.esp = (uintptr_t) &stack[511];
+	t_reaper = __t_spawn(&state);
+
+	state.regs.eip = (uintptr_t) keyboard;
+	state.regs.esp = (uintptr_t) &stack[65535];
+	__t_spawn(&state);
 
 	*((volatile int*) 42) = 24;
-
-	exit(0);
 }

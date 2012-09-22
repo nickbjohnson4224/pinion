@@ -14,7 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "rho/arch.h"
+#include "arch.h"
 
 #include "string.h"
 #include "space.h"

@@ -4,10 +4,10 @@ CC := ./tools/bin/i586-elf-gcc
 LD := ./tools/bin/i586-elf-ld
 AS := ./tools/bin/nasm
 
-CFLAGS  := -std=c99 -pedantic -Wall -Wextra -MMD -Werror
+CFLAGS  := -std=c99 -pedantic -Wall -Wextra -MMD -Werror -Wno-unused-parameter
 CFLAGS  += -O3 -fomit-frame-pointer
 CFLAGS	+= -mno-sse -mno-mmx -mno-sse2 -mno-sse3
-CFLAGS  += -I src/include
+CFLAGS  += -Isrc/include
 ASFLAGS := -felf32
 
 all: make-all

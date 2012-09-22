@@ -61,23 +61,34 @@ struct thread {
 	uint32_t vm86_saved_esp;
 	uint32_t vm86_saved_eflags;
 
+	uint32_t sys_eip;
+	uint32_t sys_esp;
+
+	uint32_t usr_eip;
+	uint32_t usr_esp;
+
 	uint32_t *fxdata;
 
 	/* thread state */
 	int id;
 	int state;
-	int exit_status;
-	uint32_t pfault_addr;
+	uint8_t flags;
 
 	/* scheduler information */
 	uint64_t tick;
 	struct thread *next;
 
 	/* event queue information */
-	struct thread *next_evqueue;
-	struct event *ev_head;
-	struct event *ev_tail;
 	int event;
+	struct thread *next_evqueue;
+
+	/* dead queue information */
+	struct thread *next_dead;
+
+	/* fault queue information */
+	uint8_t  fault;
+	uint32_t fault_addr;
+	struct thread *next_fault;
 
 	/* paging context */
 	int pctx;
@@ -90,18 +101,35 @@ struct thread *thread_get_active(void);
 struct thread *thread_get (int thread);
 void           thread_kill(struct thread *image);
 
+int thread_save(struct thread *thread);
+int thread_load(struct thread *thread);
+
 int thread_new(void);
-int thread_get_state(int thread);
-int thread_set_state(int thread, int state);
 
 /* scheduler ****************************************************************/
 
+int            schedule_push(struct thread *thread);
+int            schedule_remv(struct thread *thread);
 struct thread *schedule_next(void);
 
 /* event queue **************************************************************/
 
 int event_wait(int thread, int event);
 int event_remv(int thread, int event);
-int event_send(int thread, int event, int status);
+int event_send(int thread, int event);
+
+/* dead/reaper queue ********************************************************/
+
+int dead_push(struct thread *dead);
+struct thread *dead_peek(void);
+struct thread *dead_pull(void);
+int dead_wait(struct thread *reaper);
+
+/* fault/debug queue ********************************************************/
+
+int fault_push(struct thread *fault);
+struct thread *fault_peek(void);
+struct thread *fault_pull(void);
+int fault_wait(struct thread *debug);
 
 #endif/*KERNEL_THREAD_H*/

@@ -37,18 +37,30 @@ struct t_regs {
 } __attribute__((packed));
 
 struct t_info {
-	int id;
-	int state;
-	int exit_status;
-	int wait_event;
+	int32_t id;    // thread ID
+	int32_t pctx;  // paging context ID
 
-	uint64_t tick;
-	
+	uint8_t state; // thread state 
+	uint8_t flags; // thread flags
+	uint8_t event; // event being waited on
+	uint8_t fault; // fault that occurred
+
+	// fault information
+	uint32_t fault_addr;
+	uint8_t fault_reserved[4];
+
+	// scheduling information
+	int8_t sched_priority;
+	int8_t sched_flags;
+	uint8_t sched_reserved[2];
+	uint32_t sched_ticks;
+
+	// system call state
+	uint32_t usr_ip; // user saved instruction pointer
+	uint32_t usr_sp; // user saved stack pointer
+
 	struct t_regs regs;
 
-	uint32_t fault_addr;
-	uint32_t fault_type;
-	uint32_t fault_code;
 } __attribute__((packed));
 
 /* thread states ************************************************************/
@@ -59,45 +71,61 @@ struct t_info {
 #define TS_QUEUED  1 // in a scheduler queue
 #define TS_RUNNING 2 // currently running on a processor
 #define TS_WAITING 3 // waiting for an event
-#define TS_PAUSED  4 // inactive due to pause() or a fault
-#define TS_ZOMBIE  5 // killed but not yet reaped
+#define TS_PAUSED  4 // paused due to pause() or a fault
+#define TS_PAUSEDW 5 // paused while waiting
+
+#define TF_DEAD    1 // thread has exited or been killed
+#define TF_USER    2 // thread is in usermode
+
+#define TE_STATE   1 // invalid state transition
+#define TE_EXIST   2 // thread does not exist
+#define TE_RESRC   3 // insufficient resources to fulfill request
+
+/* kernel calls *************************************************************/
+
+#define KCALL_KINFO    0x00 // int kinfo(struct k_info *info);
+#define KCALL_KCONFIG  0x01 // int kconfig(struct k_info *info);
 
 /* threading calls **********************************************************/
 
-#define KCALL_SPAWN    0x00 // int spawn(void *stack, void *entry)
-#define KCALL_EXIT     0x01 // int exit(int status)
-#define KCALL_KILL     0x02 // int kill(int thread, int status)
-#define KCALL_REAP     0x03 // int reap(int thread, struct t_info *info)
-#define KCALL_WAIT     0x04 // int wait(int event, int *status)
-#define KCALL_GETTID   0x05 // int gettid(void)
-#define KCALL_YIELD    0x06 // int yield(void)
-#define KCALL_WAKEUP   0x07 // int wakeup(int thread, int event, int status)
-#define KCALL_RENICE   0x08 // int renice(int priority)
-#define KCALL_PAUSE    0x09 // int pause(int thread)
-#define KCALL_RESUME   0x0A // int resume(int thread)
-#define KCALL_INFO     0x0B // int info(int thread, struct t_info *info)
-#define KCALL_FIXUP    0x0C // int fixup(int thread, struct t_info *info)
-#define KCALL_SETCALL  0x0D // int setcall(void *entry)
+#define KCALL_SPAWN    0x02 // int spawn(void *stack, void *entry)
+#define KCALL_GETTID   0x03 // int gettid(void)
+#define KCALL_YIELD    0x04 // int yield(void)
+#define KCALL_PAUSE    0x05 // int pause(int thread)
+#define KCALL_RESUME   0x06 // int resume(int thread)
+#define KCALL_GETSTATE 0x07 // int getstate(int thread, struct t_info *info)
+#define KCALL_SETSTATE 0x08 // int setstate(int thread, struct t_info *info)
+#define KCALL_GETFAULT 0x09 // int getfault(void)
+#define KCALL_GETDEAD  0x0A // int getdead(void)
+#define KCALL_REAP     0x0B // int reap(int thread, struct t_info *info)
+#define KCALL_WAIT     0x0D // int wait(int event)
+#define KCALL_RESET    0x0E // int reset(int event)
+#define KCALL_SYSRET   0x0F // (used from assembly only)
+
+#define FV_PAGE 1 // page fault
+#define FV_ACCS 2 // access violation (other than page fault)
 
 /* event constants and macros ***********************************************/
 
-#define EV_COUNT  1024        // number of valid event vectors
-#define EV_EXIT   0           // event caused by thread exit
-#define EV_FAULT  1           // event caused by thread fault (non-page)
-#define EV_PAGE   2           // event caused by thread page fault
-#define EV_IRQ(n) (512 + (n)) // 
+#define EV_COUNT 256 // number of valid event vectors
 
-/* memory management calls **************************************************/
+// EV_VTIMER(n) is fired at 2^(n-5) Hz
+// n may be in the range from 0 to 15 inclusive
+// i.e. there are timers from 1/32 to 1024 Hz
+#define EV_VTIMER(n) (255-(n))
+
+/* paging calls *************************************************************/
 
 #define KCALL_NEWPCTX  0x10 // int newpctx(void)
 #define KCALL_FREEPCTX 0x11 // int freepctx(int pctx)
-#define KCALL_SETPCTX  0x12 // int setpctx(int thread, int pctx)
-#define KCALL_GETPCTX  0x13 // int getpctx(int thread)
-#define KCALL_ALLOC    0x14 // int alloc(uintptr_t page, int flags)
-#define KCALL_SETFRAME 0x15 // int setframe(uintptr_t page, uint64_t frame)
-#define KCALL_SETFLAGS 0x16 // int setflags(uintptr_t page, int flags)
-#define KCALL_GETFRAME 0x17 // uint64_t getframe(uintptr_t page)
-#define KCALL_GETFLAGS 0x18 // int getflags(uintptr_t page)
+#define KCALL_SETFRAME 0x12 // int setframe(uintptr_t page, uint64_t frame)
+#define KCALL_SETFLAGS 0x13 // int setflags(uintptr_t page, int flags)
+#define KCALL_GETFRAME 0x14 // uint64_t getframe(uintptr_t page)
+#define KCALL_GETFLAGS 0x15 // int getflags(uintptr_t page)
+
+#define KCALL_NEWFRAME  0x1C // uint64_t newframe(void);
+#define KCALL_FREEFRAME 0x1D // int freeframe(uint64_t frame);
+#define KCALL_TAKEFRAME 0x1E // int takeframe(uint64_t frame);
 
 /* memory management constants and macros ***********************************/
 

@@ -24,79 +24,84 @@
 #include "pctx.h"
 
 static void save_info(struct t_info *dest, struct thread *src);
-static void load_info(struct thread *dest, struct t_info *src);
+//static void load_info(struct thread *dest, struct t_info *src);
 
 void kcall(struct thread *image) {
+
+	if (image->flags & TF_USER) {
+		// perform syscall
+
+		// save user state
+		image->usr_eip = image->eip;
+		image->usr_esp = image->useresp;
+
+		// switch to system mode
+		image->ss = 0x21;
+		image->ds = 0x21;
+		image->cs = 0x19;
+		image->flags &= ~TF_USER;
+
+		// restore system state
+		image->eip = image->sys_eip;
+		image->useresp = image->sys_esp;		
+
+		return;
+	}
 
 	switch (image->eax) {
 
 	case KCALL_SPAWN: {
 
 		int id = thread_new();
+		if (id == -1) {
+			// failure to create new thread
+			image->eax = -1;
+			break;
+		}
+
 		struct thread *thread = thread_get(id);
-		thread->useresp = image->ebx;
+		struct t_info *state = (void*) image->ebx;
+
+		// initialize thread state
+		thread->useresp = state->regs.esp;
 		thread->esp     = (uintptr_t) &thread->num;
 		thread->ss      = 0x21;
 		thread->ds      = 0x21;
 		thread->cs      = 0x19;
 		thread->eflags  = image->eflags;
-		thread->eip     = image->ecx;
+		thread->eip     = state->regs.eip;
+		thread->ebp     = state->regs.ebp;
+		thread->esi     = state->regs.esi;
+		thread->edi     = state->regs.edi;
+		thread->edx     = state->regs.edx;
+		thread->ecx     = state->regs.ecx;
+		thread->ebx     = state->regs.ebx;
+		thread->eax     = state->regs.eax;
 
-		thread_set_state(thread->id, TS_QUEUED);
+		// add to scheduler queue
+		thread->state = TS_QUEUED;
+		schedule_push(thread);
+
 		image->eax = id;
-
-		break;
-	}
-
-	case KCALL_EXIT: {
-
-		thread_set_state(image->id, TS_ZOMBIE);
-		image->exit_status = image->ebx;
-
-		event_send(-1, EV_EXIT, image->id);
-
-		break;
-	}
-
-	case KCALL_KILL: {
-		
-		struct thread *target = thread_get(image->ebx);
-		if (!target) {
-			image->eax = -1;
-		}
-		else {
-			thread_set_state(target->id, TS_ZOMBIE);
-			target->exit_status = image->ecx;
-			image->eax = 0;
-
-			event_send(-1, EV_EXIT, target->id);
-		}
-
 		break;
 	}
 
 	case KCALL_REAP: {
-		
-		if (thread_get_state(image->ebx) != TS_ZOMBIE) {
-			image->eax = 0;
+
+		struct thread *target = thread_get(image->ebx);
+
+		if (target->state != TS_PAUSED) {
+			image->eax = TE_STATE;
 		}
 		else {
-			struct thread *target = thread_get(image->ebx);
 
 			if (image->ecx) {
 				save_info((void*) image->ecx, target);
 			}
 
-			image->eax = target->exit_status;
-			thread_set_state(image->ebx, TS_FREE);
+			image->eax = 0;
+			thread_kill(target);
 		}
-
-		break;
-	}
-
-	case KCALL_WAIT: {
-
-		image->eax = event_wait(image->id, image->ebx);
 
 		break;
 	}
@@ -110,39 +115,54 @@ void kcall(struct thread *image) {
 
 	case KCALL_YIELD: {
 		
-		thread_set_state(image->id, TS_QUEUED);
+		thread_save(image);
+		schedule_push(image);
+		image->state = TS_QUEUED;
 
-		break;
-	}
-
-	case KCALL_WAKEUP: {
-
-		image->eax = event_send(image->ebx, image->ecx, image->edx);
-
-		break;
-	}
-
-	case KCALL_RENICE: {
-
-		// TODO - priorities in scheduler
 		break;
 	}
 
 	case KCALL_PAUSE: {
 
 		struct thread *target = thread_get(image->ebx);
-		if (!target) {
-			image->eax = 1;
-		}
-		else if (thread_get_state(target->id) == TS_RUNNING
-			|| thread_get_state(target->id) == TS_QUEUED
-			|| thread_get_state(target->id) == TS_WAITING) {
+		if (image->ebx == (uint32_t) -1) target = image;
 
-			thread_set_state(target->id, TS_PAUSED);
-			image->eax = 0;
+		if (!target) {
+			image->eax = TE_EXIST;
 		}
-		else {
-			image->eax = 1;
+		else switch (target->state) {
+		case TS_RUNNING:
+
+			// pause (normal, from running)
+			thread_save(target);
+			target->state = TS_PAUSED;
+			
+			image->eax = 0;
+			break;
+
+		case TS_QUEUED:
+
+			// pause (normal, from queued)
+			schedule_remv(target);
+			target->state = TS_PAUSED;
+
+			image->eax = 0;
+			break;
+
+		case TS_WAITING:
+
+			// pause (waiting)
+			event_remv(target->id, target->event);
+			target->state = TS_PAUSEDW;
+
+			image->eax = 0;
+			break;
+
+		default:
+
+			// invalid state transition
+			image->eax = TE_STATE;
+			break;
 		}
 
 		break;
@@ -152,29 +172,46 @@ void kcall(struct thread *image) {
 
 		struct thread *target = thread_get(image->ebx);
 		if (!target) {
-			image->eax = 1;
+			image->eax = TE_EXIST;
 		}
-		else if (thread_get_state(target->id) == TS_PAUSED) {
-			if (target->event == -1) {
-				thread_set_state(target->id, TS_QUEUED);
-			}
-			else {
-				event_wait(target->id, target->event);
-			}
+		else switch (target->state) {
+		case TS_PAUSED:
+
+			// resume thread by scheduling
+			schedule_push(target);
+			target->state = TS_QUEUED;
+
 			image->eax = 0;
-		}
-		else {
-			image->eax = 1;
+			break;
+
+		case TS_PAUSEDW:
+
+			// resume thread by entering wait queue
+			event_wait(target->id, target->event);
+			target->state = TS_WAITING;
+
+			image->eax = 0;
+			break;
+
+		default:
+
+			image->eax = TE_STATE;
+			break;
 		}
 
 		break;
 	}
 
-	case KCALL_INFO: {
+	case KCALL_GETSTATE: {
 
 		struct thread *target = thread_get(image->ebx);
+		if (image->ebx == (uint32_t) -1) target = image;
+
 		if (!target) {
-			image->eax = 1;
+			image->eax = TE_EXIST;
+		}
+		else if (target->state != TS_PAUSED && target->state != TS_PAUSEDW && target != image) {
+			image->eax = TE_STATE;
 		}
 		else {
 			save_info((void*) image->ecx, target);
@@ -184,16 +221,151 @@ void kcall(struct thread *image) {
 		break;
 	}
 
-	case KCALL_FIXUP: {
+	case KCALL_SETSTATE: {
 
 		struct thread *target = thread_get(image->ebx);
+		if (image->ebx == (uint32_t) -1) target = image;
+
 		if (!target) {
-			image->eax = 1;
+			image->eax = TE_EXIST;
+		}
+		else switch (target->state) {
+		case TS_PAUSED:
+		case TS_PAUSEDW:
+		case TS_RUNNING: {
+
+			struct t_info *src = (void*) image->ecx;
+
+			if (src->flags & TF_DEAD) {
+
+				// kill thread
+				if (target->state == TS_RUNNING) {
+					thread_save(target);
+					target->state = TS_PAUSED;
+				}
+
+				// notify reaper
+				dead_push(target);
+			}
+
+			if (target->pctx != src->pctx) {
+
+				// change paging contexts
+				pctx_load(src->pctx);
+			}
+
+			// save thread state
+			target->pctx  = src->pctx;
+			target->flags = src->flags;
+			target->fault = src->fault;
+
+			if (target->state != TS_RUNNING) {
+
+				// save register state
+				target->edi = src->regs.edi;
+				target->esi = src->regs.esi;
+				target->ebp = src->regs.ebp;
+				target->useresp = src->regs.esp;
+				target->ebx = src->regs.ebx;
+				target->edx = src->regs.edx;
+				target->ecx = src->regs.ecx;
+				target->eax = src->regs.eax;
+				target->eip = src->regs.eip;
+				target->eflags = src->regs.eflags;
+
+				// save MMX/SSE state
+				if (!target->fxdata) target->fxdata = heap_alloc(512);
+				memcpy(target->fxdata, &src->regs.fxdata[0], 512);
+			}
+
+			target->usr_eip = src->usr_ip;
+			target->usr_esp = src->usr_sp;
+
+			image->eax = 0;
+			break;
+		}
+
+		default:
+
+			image->eax = TE_STATE;
+			break;
+		}
+
+		break;
+	}
+
+	case KCALL_GETDEAD: {
+
+		if (dead_peek()) {
+			struct thread *dead = dead_pull();
+			image->eax = dead->id;
 		}
 		else {
-			load_info(target, (void*) image->ecx);
-			image->eax = 0;
+			thread_save(image);
+			image->state = TS_PAUSED;
+
+			dead_wait(image);
 		}
+
+		break;
+	}
+
+	case KCALL_GETFAULT: {
+
+		if (fault_peek()) {
+			struct thread *fault = fault_pull();
+			image->eax = fault->id;
+		}
+		else {
+			thread_save(image);
+			image->state = TS_PAUSED;
+
+			fault_wait(image);
+		}
+
+		break;
+	}
+
+	case KCALL_WAIT: {
+		
+		image->eax = event_wait(image->id, image->ebx);
+
+		break;
+
+	}
+
+	case KCALL_RESET: {
+
+		if (image->ebx < 240) {
+			extern int irqstate[EV_COUNT];
+
+			irqstate[image->ebx] = 0;
+			irq_unmask(image->ebx);
+		}
+
+		image->eax = 0;
+
+		break;
+	}
+
+	case KCALL_SYSRET: {
+
+		// save system state
+		image->sys_eip = image->eip;
+		image->sys_esp = image->useresp;
+		
+		// perform return value swap-in
+		image->eax = image->ebp;
+
+		// switch to usermode
+		image->ss = 0x33;
+		image->ds = 0x33;
+		image->cs = 0x2B;
+		image->flags |= TF_USER;
+
+		// restore user state
+		image->eip = image->usr_eip;
+		image->useresp = image->usr_esp;
 
 		break;
 	}
@@ -212,49 +384,10 @@ void kcall(struct thread *image) {
 		break;
 	}
 
-	case KCALL_SETPCTX: {
-
-		struct thread *target = thread_get(image->ebx);
-		if (!target) {
-			image->eax = 1;
-		}
-		else {
-			target->pctx = image->ecx;
-		}
-
-		break;
-	}
-
-	case KCALL_GETPCTX: {
-
-		struct thread *target = thread_get(image->ebx);
-		if (!target) {
-			image->eax = -1;
-		}
-		else {
-			image->eax = target->pctx;
-		}
-
-		break;
-	}
-
-	case KCALL_ALLOC: {
-	
-		page_set(image->ebx, page_fmt(frame_new(), PF_PRES | image->ecx));
-		image->eax = 0;
-
-		break;
-	}
 
 	case KCALL_SETFRAME: {
 
-		if (page_ufmt(page_get(image->ebx))) {
-			frame_free(page_ufmt(page_get(image->ebx)));
-		}
 		page_set(image->ebx, page_fmt(image->ecx, page_get(image->ebx)));
-		if (image->ecx) {
-			frame_ref(image->ecx);
-		}
 		image->eax = 0;
 
 		break;
@@ -284,6 +417,29 @@ void kcall(struct thread *image) {
 		break;
 	}
 
+	case KCALL_NEWFRAME: {
+
+		uint64_t frame = frame_new();
+		image->eax = frame & 0xFFFFFFFF;
+		image->ebx = frame >> 32ULL;
+
+		break;
+	}
+
+	case KCALL_FREEFRAME: {
+
+		frame_free(image->ebx);
+
+		image->eax = 0;
+		break;
+	}
+
+	case KCALL_TAKEFRAME: {
+		
+		image->eax = 1;
+		break;
+	}	
+
 	default: {
 
 		debug_printf("warning: unimplemented kcall %d\n", image->eax);
@@ -297,51 +453,33 @@ void kcall(struct thread *image) {
 
 static void save_info(struct t_info *dest, struct thread *src) {
 	
-	dest->id = src->id;
+	dest->id    = src->id;
+	dest->pctx  = src->pctx;
 	dest->state = src->state;
-	dest->exit_status = src->exit_status;
-	dest->tick = src->tick;
-	dest->wait_event = src->event;
+	dest->event = src->event;
+	dest->flags = src->flags;
 
-	dest->fault_addr = src->pfault_addr;
-	dest->fault_type = src->num;
-	dest->fault_code = src->err;
+	dest->fault = src->fault;
+	dest->fault_addr = src->fault_addr;
 
-	dest->regs.edi = src->edi;
-	dest->regs.esi = src->esi;
-	dest->regs.ebp = src->ebp;
-	dest->regs.esp = src->useresp;
-	dest->regs.ebx = src->ebx;
-	dest->regs.edx = src->edx;
-	dest->regs.ecx = src->ecx;
-	dest->regs.eax = src->eax;
-	dest->regs.eip = src->eip;
-	dest->regs.eflags = src->eflags;
+	if (src->state != TS_RUNNING) {
 
-	if (src->fxdata) {
-		memcpy(&dest->regs.fxdata[0], src->fxdata, 512);
-	}
-
-}
-
-static void load_info(struct thread *dest, struct t_info *src) {
-
-	dest->exit_status = src->exit_status;
+		dest->regs.edi = src->edi;
+		dest->regs.esi = src->esi;
+		dest->regs.ebp = src->ebp;
+		dest->regs.esp = src->useresp;
+		dest->regs.ebx = src->ebx;
+		dest->regs.edx = src->edx;
+		dest->regs.ecx = src->ecx;
+		dest->regs.eax = src->eax;
+		dest->regs.eip = src->eip;
+		dest->regs.eflags = src->eflags;
 	
-	dest->edi = src->regs.edi;
-	dest->esi = src->regs.esi;
-	dest->ebp = src->regs.ebp;
-	dest->useresp = src->regs.esp;
-	dest->ebx = src->regs.ebx;
-	dest->edx = src->regs.edx;
-	dest->ecx = src->regs.ecx;
-	dest->eax = src->regs.eax;
-	dest->eip = src->regs.eip;
-	dest->eflags = src->regs.eflags;
-
-	if (!dest->fxdata) {
-		dest->fxdata = heap_alloc(512);
+		if (src->fxdata) {
+			memcpy(&dest->regs.fxdata[0], src->fxdata, 512);
+		}
 	}
-	memcpy(dest->fxdata, &src->regs.fxdata[0], 512);
 
+	dest->usr_ip = src->usr_eip;
+	dest->usr_sp = src->usr_esp;
 }
