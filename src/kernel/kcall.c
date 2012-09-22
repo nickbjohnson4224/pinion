@@ -96,7 +96,7 @@ void kcall(struct thread *image) {
 
 	case KCALL_WAIT: {
 
-		event_wait(image->id, image->ebx);
+		image->eax = event_wait(image->id, image->ebx);
 
 		break;
 	}
@@ -117,8 +117,7 @@ void kcall(struct thread *image) {
 
 	case KCALL_WAKEUP: {
 
-		event_send(image->ebx, image->ecx, image->edx);
-		image->eax = 0;
+		image->eax = event_send(image->ebx, image->ecx, image->edx);
 
 		break;
 	}
@@ -271,14 +270,16 @@ void kcall(struct thread *image) {
 
 	case KCALL_GETFRAME: {
 
-		image->eax = page_ufmt(page_get(image->eax));
+		uint32_t off  = image->ebx & 0xFFF;
+		uint32_t page = image->ebx & ~0xFFF;
+		image->eax = page_ufmt(page_get(page)) | off;
 
 		break;
 	}
 
 	case KCALL_GETFLAGS: {
 
-		image->eax = page_get(image->eax) & PF_MASK;
+		image->eax = page_get(image->ebx) & PF_MASK;
 
 		break;
 	}

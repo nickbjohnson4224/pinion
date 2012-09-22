@@ -197,7 +197,7 @@ install-system: build-system
 cd-image: make-all
 	@ mkdir -p images/
 	@ echo " IMAGE	images/pinion.iso"
-	@ genisoimage -R -b boot/grub/stage2_eltorito -no-emul-boot \
+	@ mkisofs -R -b boot/grub/stage2_eltorito -no-emul-boot \
 		-quiet -boot-load-size 4 -boot-info-table \
 		-o images/pinion.iso root
 

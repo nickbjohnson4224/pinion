@@ -28,6 +28,14 @@ static int schedule_remv(struct thread *thread);
 static struct thread *_active_thread;
 static struct thread *_thread_table[THREAD_COUNT];
 
+/*****************************************************************************
+ * thread_alloc
+ *
+ * Allocate a new thread structure. The state of this new thread is TS_PAUSED.
+ * If successful, returns a pointer to the new thread structure. If not
+ * successful, returns NULL.
+ */
+
 static struct thread *thread_alloc(void) {
 	struct thread *thread;
 
@@ -49,10 +57,25 @@ static struct thread *thread_alloc(void) {
 	return thread;
 }
 
+/*****************************************************************************
+ * thread_get
+ *
+ * Return the thread structure associated with the given thread ID. If no
+ * thread is associated with the given ID (i.e. if that ID is not allocated
+ * or is out of range), returns NULL.
+ */
+
 struct thread *thread_get(int thread) {
 	if (thread < 0 || thread >= THREAD_COUNT) return NULL;
 	return _thread_table[thread];
 }
+
+/*****************************************************************************
+ * thread_kill
+ *
+ * Free all memory associated with a given thread structure. The state of the
+ * thread changes to TS_FREE.
+ */
 
 void thread_kill(struct thread *thread) {
 
@@ -68,9 +91,26 @@ void thread_kill(struct thread *thread) {
 	heap_free(thread, sizeof(struct thread));
 }
 
+/*****************************************************************************
+ * thread_get_active
+ * 
+ * Return the actively running thread. If no thread is running, returns NULL.
+ * The actively running thread is guaranteed to be the unique thread with
+ * state TS_RUNNING.
+ */
+
 struct thread *thread_get_active(void) {
 	return _active_thread;
 }
+
+/*****************************************************************************
+ * thread_load
+ *
+ * Load the state of a given thread structure, i.e. prepare the processor for
+ * running the given thread. If the active paging context does not match the
+ * paging context of the given thread, it is changed to match the paging
+ * context of the given thread.
+ */
 
 static int thread_load(struct thread *thread) {
 	
@@ -92,6 +132,13 @@ static int thread_load(struct thread *thread) {
 	return 0;
 }
 
+/*****************************************************************************
+ * thread_save
+ *
+ * Fully save the state of a given thread structure. This is only required
+ * before switching to another thread.
+ */
+
 static int thread_save(struct thread *thread) {
 	
 	if (thread && thread->fxdata) {
@@ -100,6 +147,13 @@ static int thread_save(struct thread *thread) {
 
 	return 0;
 }
+
+/*****************************************************************************
+ * thread_new
+ *
+ * Allocate a new thread and return its ID number. Returns -1 on error. The
+ * thread's state is TS_PAUSED.
+ */
 
 int thread_new(void) {
 	struct thread *thread = thread_alloc();
@@ -111,6 +165,12 @@ int thread_new(void) {
 
 	return thread->id;
 }
+
+/*****************************************************************************
+ * thread_get_state
+ *
+ * Return the current state of the thread associated with the given thread ID.
+ */
 
 int thread_get_state(int id) {
 	struct thread *thread = thread_get(id);
@@ -133,14 +193,27 @@ static void invtrans(int id, int state0, int state1) {
 	debug_panic("invalid thread state transition");
 }
 
+/*****************************************************************************
+ * thread_set_state
+ *
+ * Perform a state transition for the given thread to the given state. If this
+ * transition is invalid, the kernel will panic. Any code that is able to
+ * request an invalid state transition is incorrect and must be fixed. This is
+ * the only function that should be able to modify the state of a thread
+ * (other than thread_kill and thread_alloc, which transition in and out of
+ * TS_FREE and are internal anyway.)
+ */
+
 int thread_set_state(int id, int state) {
 	struct thread *thread = thread_get(id);
 
+	/* transitions out of TS_FREE are invalid */
 	if (!thread) {
 		invtrans(id, TS_FREE, state);
 		return 1;
 	}
 
+	/* redundant state transitions are invalid */
 	if (thread->state == state) {
 		invtrans(id, thread->state, state);
 		return 1;
